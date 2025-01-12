@@ -11,7 +11,6 @@ package kv
 
 import (
 	"context"
-
 	"github.com/synnaxlabs/aspen/internal/node"
 	"github.com/synnaxlabs/x/binary"
 	"github.com/synnaxlabs/x/change"
@@ -99,6 +98,8 @@ func (d Digest) Operation() Operation {
 	}
 }
 
+const digestPrefix = "--dig/"
+
 func digestKey(key []byte) (opKey []byte, err error) {
-	return kvx.CompositeKey("--dig/", key)
+	return kvx.CompositeKey(digestPrefix, key)
 }

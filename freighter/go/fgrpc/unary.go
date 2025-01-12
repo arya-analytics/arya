@@ -18,6 +18,7 @@ import (
 	roacherrors "github.com/synnaxlabs/x/errors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
+	"path"
 )
 
 var (
@@ -32,6 +33,7 @@ var (
 //  2. That RPC method must be named Exec for UnaryClient to properly implement the
 //     interface.
 type UnaryClient[RQ, RQT, RS, RST freighter.Payload] struct {
+	TargetPrefix address.Address
 	// RequestTranslator translates the given go request into a GRPC payload.
 	// See Translator for more information.
 	RequestTranslator Translator[RQ, RQT]
@@ -85,39 +87,41 @@ func (u *UnaryClient[RQ, RQT, RS, RST]) Send(
 	target address.Address,
 	req RQ,
 ) (res RS, err error) {
+	target = address.Address(path.Join(u.TargetPrefix.String(), target.String()))
 	_, err = u.MiddlewareCollector.Exec(
 		freighter.Context{
 			Context:  ctx,
-			Target:   address.Newf("%s.%s", target, u.ServiceDesc.ServiceName),
+			Target:   address.Newf("%s.%s", u.TargetPrefix+target, u.ServiceDesc.ServiceName),
 			Role:     freighter.Client,
 			Protocol: Reporter.Protocol,
 			Params:   make(freighter.Params),
 			Variant:  freighter.Unary,
 		},
-		freighter.FinalizerFunc(func(ctx freighter.Context) (oMD freighter.Context, err error) {
-			ctx = attachContext(ctx)
+		freighter.FinalizerFunc(func(iCtx freighter.Context) (oCtx freighter.Context, err error) {
+			iCtx = attachContext(iCtx)
 			conn, err := u.Pool.Acquire(target)
 			if err != nil {
-				return oMD, err
+				return oCtx, err
 			}
-			tReq, err := u.RequestTranslator.Forward(ctx, req)
+			tReq, err := u.RequestTranslator.Forward(iCtx, req)
 			if err != nil {
-				return oMD, err
+				return oCtx, err
 			}
-			tRes, err := u.Exec(ctx, conn.ClientConn, tReq)
-			oMD = parseContext(
-				ctx,
-				u.ServiceDesc.ServiceName,
-				freighter.Client,
-				freighter.Unary,
-			)
+			tRes, err := u.Exec(iCtx, conn.ClientConn, tReq)
+			oCtx = freighter.Context{
+				Context:  iCtx.Context,
+				Protocol: iCtx.Protocol,
+				Target:   address.Address(u.ServiceDesc.ServiceName),
+				Params:   make(freighter.Params),
+				Role:     iCtx.Role,
+			}
 			if err != nil {
 				p := &errors.Payload{}
 				p.Unmarshal(status.Convert(err).Message())
-				return oMD, errors.Decode(ctx, *p)
+				return oCtx, errors.Decode(iCtx, *p)
 			}
-			res, err = u.ResponseTranslator.Backward(ctx, tRes)
-			return oMD, err
+			res, err = u.ResponseTranslator.Backward(iCtx, tRes)
+			return oCtx, err
 		}),
 	)
 	return res, err
@@ -126,7 +130,7 @@ func (u *UnaryClient[RQ, RQT, RS, RST]) Send(
 // Exec implements the GRPC service interface.
 func (u *UnaryServer[RQ, RQT, RS, RST]) Exec(ctx context.Context, tReq RQT) (tRes RST, err error) {
 	oCtx, err := u.MiddlewareCollector.Exec(
-		parseContext(ctx, u.ServiceDesc.ServiceName, freighter.Server, freighter.Unary),
+		parseServerContext(ctx, u.ServiceDesc.ServiceName, freighter.Unary),
 		freighter.FinalizerFunc(func(ctx freighter.Context) (freighter.Context, error) {
 			oCtx := freighter.Context{
 				Context:  ctx.Context,
